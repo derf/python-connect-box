@@ -7,7 +7,7 @@ import aiohttp
 from aiohttp.hdrs import REFERER, USER_AGENT
 import defusedxml.ElementTree as element_tree
 
-from .data import Device, DownstreamChannel, UpstreamChannel
+from .data import Device, DownstreamChannel, UpstreamChannel, CMState
 from . import exceptions
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ CMD_LOGOUT = 16
 CMD_DEVICES = 123
 CMD_DOWNSTREAM = 10
 CMD_UPSTREAM = 11
+CMD_CM_STATE = 136
 
 
 class ConnectBox:
@@ -131,6 +132,29 @@ class ConnectBox:
             _LOGGER.warning("Can't read upstream channels from %s", self.host)
             self.token = None
             raise exceptions.ConnectBoxNoDataAvailable() from None
+
+    async def async_get_cm_state(self):
+        """Get overall system state, temperatures and IPs."""
+        if self.token is None:
+            await self.async_initialize_token()
+
+        raw = await self._async_ws_function(CMD_CM_STATE)
+
+        try:
+            xml_root = element_tree.fromstring(raw)
+            ip4_nets: List[str] = [entry.text.partition('/')[0] for entry in xml_root.iter("wan_ipv4_addr_entry")]
+            ip6_nets: List[str] = [entry.text.partition('/')[0] for entry in xml_root.iter("wan_ipv6_addr_entry")]
+            self.cm_state = CMState(
+                int(xml_root.find('TunnerTemperature').text),
+                int(xml_root.find('Temperature').text),
+                xml_root.find('OperState').text,
+                ip4_nets,
+                ip6_nets
+            )
+        except (element_tree.ParseError, TypeError):
+            _LOGGER.warning("Can't read system state (CM_STATE) from %s", self.host)
+            self.token = None
+            raise exceptions.ConnectBoxNoDataAvailable()
 
     async def async_close_session(self) -> None:
         """Logout and close session."""
